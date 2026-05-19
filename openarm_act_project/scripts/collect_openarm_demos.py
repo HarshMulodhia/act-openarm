@@ -251,6 +251,7 @@ def main() -> None:
     image_height: int = obs_cfg.get("image_height", 480)
     image_width: int = obs_cfg.get("image_width", 640)
     task_name: str = cfg.get("task_name", task)
+    # Backward compatibility: older configs used `collection.expert_source`.
     collection_mode: str = coll_cfg.get("mode", coll_cfg.get("expert_source", "rsl_rl"))
     if collection_mode not in {"rsl_rl", "keyboard", "dagger"}:
         raise ValueError(f"Unsupported collection.mode: {collection_mode}")
@@ -282,7 +283,7 @@ def main() -> None:
     if collection_mode == "dagger":
         student_checkpoint = _resolve_project_path(dagger_cfg.get("student_checkpoint_dir"))
         if not student_checkpoint:
-            raise RuntimeError("collection.dagger.student_checkpoint_dir is required for expert_source=dagger.")
+            raise RuntimeError("collection.dagger.student_checkpoint_dir is required for collection.mode=dagger.")
         student_policy = ACTOpenArmPolicy.from_checkpoint(student_checkpoint, cfg, device=args_cli.device)
         norm_stats = load_norm_stats(student_checkpoint)
         if norm_stats is not None:
