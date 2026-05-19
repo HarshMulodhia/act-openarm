@@ -6,7 +6,7 @@ at the path configured in the YAML config file.
 
 Usage (from workspace root)::
 
-    python openarm_act_project/scripts/collect_openarm_demos.py \\
+    /isaac-sim/python.sh openarm_act_project/scripts/collect_openarm_demos.py \\
         --config openarm_act_project/configs/act_openarm_reach.yaml
 
 Required arguments:
@@ -42,6 +42,7 @@ parser.add_argument(
 )
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+args_cli.enable_cameras = True
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
@@ -55,6 +56,14 @@ import omni.log
 import torch
 import yaml
 
+# The OpenArm Isaac extension contains imports rooted at ``source.*``.
+# Add the extension repository root when running from this project checkout.
+_OPENARM_ISAAC_LAB_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "openarm_isaac_lab")
+)
+if os.path.isdir(_OPENARM_ISAAC_LAB_ROOT) and _OPENARM_ISAAC_LAB_ROOT not in sys.path:
+    sys.path.insert(0, _OPENARM_ISAAC_LAB_ROOT)
+
 import openarm.tasks  # noqa: F401 — register OpenArm environments
 
 from isaaclab.devices import Se3Keyboard, Se3KeyboardCfg
@@ -65,6 +74,8 @@ _SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "src")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, os.path.abspath(_SRC_DIR))
 
+from openarm_act.envs.openarm_isaac_env import configure_viewer_env_cfg, warmup_viewer  # noqa: E402
+from openarm_act.envs.openarm_isaac_env import configure_camera_env_cfg  # noqa: E402
 from openarm_act.utils.io_utils import EpisodeWriter  # noqa: E402
 
 
@@ -73,21 +84,125 @@ def load_config(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def _resolve_project_path(path: str | None) -> str | None:
+    if path is None:
+        return None
+    project_root = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+    return os.path.normpath(os.path.join(project_root, path) if not os.path.isabs(path) else path)
+
+
+def _load_expert_policy(coll_cfg: dict, device: str):
+    """Load an exported RSL-RL TorchScript policy for expert rollouts."""
+    checkpoint = _resolve_project_path(coll_cfg.get("expert_checkpoint"))
+    if checkpoint is None:
+        if coll_cfg.get("use_pretrained_checkpoint", False):
+            raise RuntimeError(
+                "collection.use_pretrained_checkpoint is set, but this collector needs an exported "
+                "RSL-RL policy.pt path. Run the OpenArm RSL-RL play script once to export policy.pt, "
+                "then set collection.expert_checkpoint to that file."
+            )
+        raise RuntimeError("collection.expert_checkpoint must point to an exported RSL-RL policy.pt file.")
+    if not os.path.isfile(checkpoint):
+        raise FileNotFoundError(f"Expert policy file not found: {checkpoint}")
+    policy = torch.jit.load(checkpoint, map_location=device)
+    policy.eval()
+    print(f"Loaded RSL-RL expert policy: {checkpoint}")
+    return policy
+
+
+def _policy_observation(obs_raw):
+    if torch.is_tensor(obs_raw):
+        return obs_raw
+    if isinstance(obs_raw, dict):
+        policy_obs = obs_raw.get("policy", obs_raw)
+        if torch.is_tensor(policy_obs):
+            return policy_obs
+        if isinstance(policy_obs, dict):
+            terms = [value for value in policy_obs.values() if torch.is_tensor(value)]
+            if terms:
+                return torch.cat([term.reshape(term.shape[0], -1) for term in terms], dim=-1)
+    raise RuntimeError("Could not extract tensor policy observation for expert inference.")
+
+
+def _get_qpos_from_env(env, num_joints: int):
+    try:
+        robot = env.scene["robot"]
+        joint_ids, _ = robot.find_joints([f"openarm_joint{i}" for i in range(1, num_joints + 1)])
+        return robot.data.joint_pos[0, joint_ids].detach().cpu().numpy().astype("float32")
+    except Exception:
+        return __import__("numpy").zeros(num_joints, dtype="float32")
+
+
+def _capture_camera_image(env, camera_name: str, height: int, width: int):
+    import numpy as np
+
+    sensor = None
+    sensors = getattr(env.scene, "sensors", {})
+    if hasattr(sensors, "get"):
+        sensor = sensors.get(camera_name)
+    if sensor is None:
+        try:
+            sensor = env.scene[camera_name]
+        except Exception:
+            sensor = None
+    output = getattr(getattr(sensor, "data", None), "output", None)
+    if output is None or "rgb" not in output:
+        return np.zeros((height, width, 3), dtype="uint8")
+    rgb = output["rgb"]
+    if torch.is_tensor(rgb):
+        rgb = rgb.detach().cpu()
+        if rgb.ndim == 4:
+            rgb = rgb[0]
+        img = rgb.numpy()
+    else:
+        img = np.asarray(rgb)
+        if img.ndim == 4:
+            img = img[0]
+    if img.shape[-1] == 4:
+        img = img[..., :3]
+    return img.astype("uint8")
+
+
+def _reach_success(env, threshold: float) -> bool:
+    try:
+        from isaaclab.utils.math import combine_frame_transforms
+
+        robot = env.scene["robot"]
+        command = env.command_manager.get_command("ee_pose")
+        desired_pos_w, _ = combine_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3])
+        body_ids, _ = robot.find_bodies(["openarm_hand"])
+        current_pos_w = robot.data.body_pos_w[:, body_ids[0]]
+        distance = torch.norm(current_pos_w - desired_pos_w, dim=1)[0]
+        return bool(distance <= threshold)
+    except Exception:
+        return False
+
+
 def main() -> None:
     cfg = load_config(args_cli.config)
     task: str = cfg["task"]
     coll_cfg: dict = cfg.get("collection", {})
     obs_cfg: dict = cfg.get("observation", {})
 
-    num_episodes: int = args_cli.num_episodes or coll_cfg.get("num_episodes", 50)
+    num_episodes: int = (
+        args_cli.num_episodes
+        if args_cli.num_episodes is not None
+        else coll_cfg.get("num_episodes", 50)
+    )
     dataset_dir: str = os.path.join(
         os.path.dirname(args_cli.config), "..", coll_cfg.get("dataset_dir", "data/demos_hdf5/demo")
     )
     dataset_dir = os.path.normpath(dataset_dir)
     step_hz: int = coll_cfg.get("step_hz", 30)
     num_success_steps: int = coll_cfg.get("num_success_steps", 10)
-    camera_names: list[str] = obs_cfg.get("camera_names", ["cam_main"])
+    max_timesteps: int = coll_cfg.get("max_timesteps", 400)
+    success_distance_threshold: float = coll_cfg.get("success_distance_threshold", 0.03)
+    camera_names: list[str] = obs_cfg.get("training_camera_names", obs_cfg.get("camera_names", ["cam_main"]))
+    camera_setup: dict = obs_cfg.get("camera_setup", {})
+    image_height: int = obs_cfg.get("image_height", 480)
+    image_width: int = obs_cfg.get("image_width", 640)
     task_name: str = cfg.get("task_name", task)
+    expert_source: str = coll_cfg.get("expert_source", "rsl_rl")
 
     os.makedirs(dataset_dir, exist_ok=True)
     hdf5_path = os.path.join(dataset_dir, "demos.hdf5")
@@ -96,15 +211,18 @@ def main() -> None:
     # Build environment
     # -----------------------------------------------------------------------
     env_cfg = parse_env_cfg(task, device=args_cli.device, num_envs=1)
-    env_cfg.observations.policy.concatenate_terms = False
+    env_cfg.observations.policy.concatenate_terms = expert_source == "rsl_rl"
+    configure_viewer_env_cfg(env_cfg)
+    configure_camera_env_cfg(env_cfg, camera_setup)
     env_cfg.terminations.time_out = None
 
     env = gym.make(task, cfg=env_cfg).unwrapped
+    expert_policy = _load_expert_policy(coll_cfg, args_cli.device) if expert_source == "rsl_rl" else None
 
     # -----------------------------------------------------------------------
     # Teleoperation device
     # -----------------------------------------------------------------------
-    teleop = Se3Keyboard(Se3KeyboardCfg(pos_sensitivity=0.2, rot_sensitivity=0.5))
+    teleop = Se3Keyboard(Se3KeyboardCfg(pos_sensitivity=0.2, rot_sensitivity=0.5)) if expert_source == "keyboard" else None
 
     quit_requested = False
 
@@ -112,8 +230,9 @@ def main() -> None:
         nonlocal quit_requested
         quit_requested = True
 
-    teleop.add_callback("Q", _quit_cb)
-    teleop.reset()
+    if teleop is not None:
+        teleop.add_callback("Q", _quit_cb)
+        teleop.reset()
 
     # -----------------------------------------------------------------------
     # Collection loop
@@ -122,12 +241,20 @@ def main() -> None:
     collected = 0
     step_period = 1.0 / step_hz
 
-    print(f"\nCollecting {num_episodes} demonstrations for task '{task}'.")
-    print("Controls: WASD/arrows — EE translation | Q — quit\n")
+    print(f"\nCollecting {num_episodes} demonstrations for task '{task}' with expert_source={expert_source}.")
+    if teleop is not None:
+        print("Controls: WASD/arrows — EE translation | Q — quit\n")
 
     while collected < num_episodes and not quit_requested:
         obs_raw, _ = env.reset()
-        teleop.reset()
+        warmup_viewer(env)
+        if expert_policy is not None and hasattr(expert_policy, "reset"):
+            try:
+                expert_policy.reset()
+            except Exception:
+                pass
+        if teleop is not None:
+            teleop.reset()
 
         episode_qpos: list = []
         episode_actions: list = []
@@ -139,39 +266,43 @@ def main() -> None:
 
         print(f"Episode {episode_idx + 1}: collecting…", end="", flush=True)
 
-        while True:
+        while step_count < max_timesteps:
             t0 = time.time()
-            delta_pose, gripper_cmd = teleop.advance()
-
-            # Build joint-level action from teleop delta (pass-through for simplicity)
-            # In a full implementation this would use IK; here we pass the delta
-            # directly so the script is runnable as-is.
-            num_joints = obs_cfg.get("num_joints", 6)
-            action_np = delta_pose[:num_joints].astype("float32")
-            action_t = torch.from_numpy(action_np).float().unsqueeze(0).to(args_cli.device)
+            if expert_policy is not None:
+                policy_obs = _policy_observation(obs_raw).to(args_cli.device)
+                with torch.inference_mode():
+                    action_t = expert_policy(policy_obs)
+                if isinstance(action_t, tuple):
+                    action_t = action_t[0]
+                action_np = action_t.squeeze(0).detach().cpu().numpy().astype("float32")
+            else:
+                teleop_cmd = teleop.advance()
+                if isinstance(teleop_cmd, tuple):
+                    delta_pose = teleop_cmd[0]
+                else:
+                    delta_pose = teleop_cmd
+                if torch.is_tensor(delta_pose):
+                    delta_pose = delta_pose.detach().cpu().numpy()
+                num_joints = obs_cfg.get("num_joints", 7)
+                action_np = delta_pose[:num_joints].astype("float32")
+                action_t = torch.from_numpy(action_np).float().unsqueeze(0).to(args_cli.device)
 
             obs_raw, _rew, terminated, truncated, info = env.step(action_t)
             step_count += 1
 
-            # Parse qpos
-            qpos = None
-            if isinstance(obs_raw, dict):
-                qpos_t = obs_raw.get("policy", {}).get("joint_pos")
-                if qpos_t is not None:
-                    qpos = qpos_t.squeeze(0).cpu().numpy()
-            if qpos is None:
-                qpos = action_np  # fallback
+            qpos = _get_qpos_from_env(env, obs_cfg.get("num_joints", 7))
 
             episode_qpos.append(qpos)
             episode_actions.append(action_np)
             for cam in camera_names:
                 raw = (obs_raw.get(f"images/{cam}") or obs_raw.get(cam)) if isinstance(obs_raw, dict) else None
-                img = raw.squeeze(0).cpu().numpy().astype("uint8") if raw is not None else \
-                    __import__("numpy").zeros((480, 640, 3), dtype="uint8")
+                img = raw.squeeze(0).cpu().numpy().astype("uint8") if raw is not None else _capture_camera_image(
+                    env, cam, image_height, image_width
+                )
                 episode_images[cam].append(img)
 
             # Success check
-            if info.get("success", terminated):
+            if info.get("success", terminated) or _reach_success(env, success_distance_threshold):
                 success_steps += 1
             else:
                 success_steps = 0

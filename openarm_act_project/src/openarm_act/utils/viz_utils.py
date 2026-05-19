@@ -133,3 +133,29 @@ def plot_rollout_summary(
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     fig.savefig(output_path, dpi=120, bbox_inches="tight")
     plt.close(fig)
+
+
+def write_fixed_length_video(
+    frames: Sequence[np.ndarray],
+    output_path: str,
+    fps: int,
+    seconds: int,
+    width: int,
+    height: int,
+) -> None:
+    """Write exactly ``fps * seconds`` RGB frames, padding with the last frame."""
+    import imageio.v2 as imageio
+    from PIL import Image
+
+    if not frames:
+        frames = [np.zeros((height, width, 3), dtype=np.uint8)]
+    target_frames = int(fps * seconds)
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with imageio.get_writer(output_path, fps=fps, codec="libx264", quality=8) as writer:
+        for idx in range(target_frames):
+            frame = frames[min(idx, len(frames) - 1)]
+            if frame.shape[0] != height or frame.shape[1] != width:
+                frame = np.asarray(Image.fromarray(frame).resize((width, height), Image.Resampling.BILINEAR))
+            if frame.shape[-1] == 4:
+                frame = frame[..., :3]
+            writer.append_data(frame.astype(np.uint8))

@@ -16,6 +16,9 @@ setup(
         "torch",
         "pyyaml",
         "matplotlib",
+        "imageio",
+        "imageio-ffmpeg",
+        "pillow",
     ],
     extras_require={
         "dev": ["pytest"],

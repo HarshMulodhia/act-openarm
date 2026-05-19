@@ -1,7 +1,7 @@
 # Configuration for ACT policy training on the OpenArm unimanual lift task.
 # All paths are relative to the openarm_act_project/ directory unless absolute.
 
-task: OpenArmUnimanualLift-v0
+task: Isaac-Lift-Cube-OpenArm-v0
 task_name: openarm_lift
 
 # ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ observation:
     - cam_main
   image_height: 480
   image_width: 640
-  num_joints: 6
+  num_joints: 7
 
 # ---------------------------------------------------------------------------
 # Training

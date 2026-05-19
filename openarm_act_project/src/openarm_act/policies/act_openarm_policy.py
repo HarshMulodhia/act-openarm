@@ -92,10 +92,23 @@ class ACTOpenArmPolicy:
         """
         import sys
 
-        # Add upstream ACT repo to path so we can import ACTPolicy
-        act_repo = os.path.join(os.path.dirname(__file__), "../../../../..", "act")
-        if act_repo not in sys.path:
-            sys.path.insert(0, os.path.abspath(act_repo))
+        # Add upstream ACT repo paths so we can import ACTPolicy and its
+        # absolute DETR utility imports such as ``util.misc``.
+        project_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "../../..")
+        )
+        act_repo = os.environ.get(
+            "ACT_REPO_DIR", os.path.join(os.path.dirname(project_root), "act")
+        )
+        act_repo = os.path.abspath(act_repo)
+        if not os.path.isfile(os.path.join(act_repo, "policy.py")):
+            fallback = "/workspace/act"
+            if os.path.isfile(os.path.join(fallback, "policy.py")):
+                act_repo = fallback
+        act_detr = os.path.join(act_repo, "detr")
+        for path in (act_detr, act_repo):
+            if path not in sys.path:
+                sys.path.insert(0, path)
 
         from policy import ACTPolicy  # type: ignore[import]
 
@@ -103,6 +116,7 @@ class ACTOpenArmPolicy:
         obs_cfg = config.get("observation", {})
         chunk_size: int = model_cfg.get("chunk_size", 100)
         num_joints: int = obs_cfg.get("num_joints", 6)
+        ckpt_path = cls._find_checkpoint(checkpoint_dir)
 
         # Build policy using ACT factory arguments
         policy_config = {
@@ -116,13 +130,34 @@ class ACTOpenArmPolicy:
             "enc_layers": model_cfg.get("num_encoder_layers", 4),
             "dec_layers": 7,
             "nheads": model_cfg.get("nheads", 8),
-            "camera_names": obs_cfg.get("camera_names", ["cam_main"]),
+            "camera_names": obs_cfg.get("training_camera_names", obs_cfg.get("camera_names", ["cam_main"])),
         }
-        act_model = ACTPolicy(policy_config)
+        task_cfg = config.get("task", "openarm")
+        task_name = (
+            task_cfg.get("name", "openarm")
+            if isinstance(task_cfg, dict)
+            else task_cfg
+        )
+        argv = sys.argv
+        try:
+            sys.argv = [
+                argv[0],
+                "--ckpt_dir",
+                checkpoint_dir,
+                "--policy_class",
+                "ACT",
+                "--task_name",
+                str(task_name),
+                "--seed",
+                str(config.get("training", {}).get("seed", 0)),
+                "--num_epochs",
+                str(config.get("training", {}).get("num_epochs", 1)),
+            ]
+            act_model = ACTPolicy(policy_config)
+        finally:
+            sys.argv = argv
         act_model.to(device)
 
-        # Locate the best checkpoint file
-        ckpt_path = cls._find_checkpoint(checkpoint_dir)
         state = torch.load(ckpt_path, map_location=device)
         loading_status = act_model.load_state_dict(state)
         print(f"Loaded checkpoint: {ckpt_path}\n{loading_status}")
@@ -131,7 +166,7 @@ class ACTOpenArmPolicy:
         return cls(
             act_model=act_model,
             chunk_size=chunk_size,
-            camera_names=obs_cfg.get("camera_names", ["cam_main"]),
+            camera_names=obs_cfg.get("training_camera_names", obs_cfg.get("camera_names", ["cam_main"])),
             num_joints=num_joints,
             temporal_agg=config.get("evaluation", {}).get("temporal_agg", False),
             device=device,

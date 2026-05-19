@@ -1,0 +1,15 @@
+0. Use OpenArm manipulation tasks only from openarm_isaac_lab.
+1. Start with the unimanual reach task as the first ACT benchmark.
+2. Collect expert demonstrations in Isaac-Sim.
+3. Use robot-mounted visual observations from the OpenArm simulation setup.
+4. Record synchronized control actions for every timestep.
+5. Each episode should be a complete successful manipulation trajectory.
+6. Build both a clean expert dataset and a noise-augmented dataset.
+7. Use Gaussian noise by default; optionally test sinusoidal noise as an ablation.
+8. Do not use language intent, prompts, or language conditioning.
+9. Train an ACT-based imitation policy with a CNN visual encoder.
+10. Validate the dataset before training.
+11. Evaluate the policy on the same OpenArm task in Isaac-Sim.
+12. Render a 30-second 1080p inference video from an isometric camera.
+13. Save the trained checkpoint, rollout video, and experiment summary.
+14. Extend later to lift, cabinet, and bimanual reach if needed.

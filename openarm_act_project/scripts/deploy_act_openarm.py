@@ -22,6 +22,7 @@ Optional arguments:
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 import sys
 
 from isaaclab.app import AppLauncher
@@ -34,8 +35,44 @@ parser.add_argument("--step_hz", type=int, default=30)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
-# Ensure the viewer is visible during deployment
-if not hasattr(args_cli, "headless") or not args_cli.headless:
+_PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _resolve_project_path(path: str) -> str:
+    return os.path.normpath(
+        os.path.join(_PROJECT_ROOT, path) if not os.path.isabs(path) else path
+    )
+
+
+def _find_deploy_checkpoint(checkpoint_dir: str) -> str | None:
+    best = os.path.join(checkpoint_dir, "policy_best.ckpt")
+    if os.path.isfile(best):
+        return best
+    if not os.path.isdir(checkpoint_dir):
+        return None
+    ckpts = sorted(
+        f for f in os.listdir(checkpoint_dir) if f.startswith("policy_epoch_")
+    )
+    return os.path.join(checkpoint_dir, ckpts[-1]) if ckpts else None
+
+
+CHECKPOINT_DIR = _resolve_project_path(args_cli.checkpoint)
+if _find_deploy_checkpoint(CHECKPOINT_DIR) is None:
+    print(
+        "No trained ACT checkpoint found in "
+        f"'{CHECKPOINT_DIR}'.\n"
+        "Expected 'policy_best.ckpt' or 'policy_epoch_*.ckpt'.\n"
+        "Create one first with:\n"
+        f"  /isaac-sim/python.sh scripts/train_act_openarm.py --config {args_cli.config}",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+# Use a rendering-capable experience for the live viewer and policy cameras.
+args_cli.enable_cameras = True
+if args_cli.livestream in (1, 2):
+    args_cli.headless = True
+else:
     args_cli.headless = False
 
 app_launcher = AppLauncher(args_cli)
@@ -43,14 +80,12 @@ simulation_app = app_launcher.app
 
 """Rest of imports."""
 
-import os
 import time
 
 import numpy as np
 import torch
 import yaml
 
-_PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 _SRC_DIR = os.path.join(_PROJECT_ROOT, "src")
 _ACT_DIR = os.path.normpath(os.path.join(_PROJECT_ROOT, "..", "act"))
 for _p in (_SRC_DIR, _ACT_DIR):
@@ -73,15 +108,13 @@ def main() -> None:
     eval_cfg = cfg.get("evaluation", {})
 
     max_timesteps: int = eval_cfg.get("max_timesteps", 400)
-    camera_names: list[str] = obs_cfg.get("camera_names", ["cam_main"])
+    camera_names: list[str] = obs_cfg.get("training_camera_names", obs_cfg.get("camera_names", ["cam_main"]))
+    camera_setup: dict = obs_cfg.get("camera_setup", {})
+    render_camera_names: list[str] = obs_cfg.get("render_camera_names", [])
     num_joints: int = obs_cfg.get("num_joints", 6)
     step_period = 1.0 / args_cli.step_hz
 
-    checkpoint_dir = os.path.normpath(
-        os.path.join(_PROJECT_ROOT, args_cli.checkpoint)
-        if not os.path.isabs(args_cli.checkpoint)
-        else args_cli.checkpoint
-    )
+    checkpoint_dir = CHECKPOINT_DIR
 
     norm_stats = load_norm_stats(checkpoint_dir)
     policy = ACTOpenArmPolicy.from_checkpoint(checkpoint_dir, cfg, device=args_cli.device)
@@ -100,6 +133,9 @@ def main() -> None:
         camera_names=camera_names,
         num_joints=num_joints,
         device=args_cli.device,
+        camera_setup=camera_setup,
+        render_camera_names=render_camera_names,
+        success_distance_threshold=eval_cfg.get("success_distance_threshold", 0.03),
     ) as env:
         for ep in range(args_cli.num_episodes):
             obs = env.reset()

@@ -34,6 +34,7 @@ parser.add_argument("--num_rollouts", type=int, default=None)
 parser.add_argument("--seed", type=int, default=42)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+args_cli.enable_cameras = True
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
@@ -56,8 +57,9 @@ for _p in (_SRC_DIR, _ACT_DIR):
 
 from openarm_act.envs.openarm_isaac_env import OpenArmIsaacEnv  # noqa: E402
 from openarm_act.policies.act_openarm_policy import ACTOpenArmPolicy  # noqa: E402
+from openarm_act.utils.dataset_tools import write_experiment_summary  # noqa: E402
 from openarm_act.utils.io_utils import load_norm_stats  # noqa: E402
-from openarm_act.utils.viz_utils import plot_rollout_summary  # noqa: E402
+from openarm_act.utils.viz_utils import plot_rollout_summary, write_fixed_length_video  # noqa: E402
 
 
 def load_config(path: str) -> dict:
@@ -75,8 +77,11 @@ def main() -> None:
 
     num_rollouts: int = args_cli.num_rollouts or eval_cfg.get("num_rollouts", 50)
     max_timesteps: int = eval_cfg.get("max_timesteps", 400)
-    camera_names: list[str] = obs_cfg.get("camera_names", ["cam_main"])
+    camera_names: list[str] = obs_cfg.get("training_camera_names", obs_cfg.get("camera_names", ["cam_main"]))
+    render_camera_names: list[str] = obs_cfg.get("render_camera_names", [])
     num_joints: int = obs_cfg.get("num_joints", 6)
+    camera_setup: dict = obs_cfg.get("camera_setup", {})
+    success_distance_threshold = eval_cfg.get("success_distance_threshold", 0.03)
 
     # Load policy
     checkpoint_dir = os.path.normpath(
@@ -96,12 +101,18 @@ def main() -> None:
 
     successes = []
     episode_lengths = []
+    video_frames: list[np.ndarray] = []
+    video_camera = eval_cfg.get("video_camera", "isometric")
+    want_video = bool(eval_cfg.get("render_video", False))
 
     with OpenArmIsaacEnv(
         task=cfg["task"],
         camera_names=camera_names,
         num_joints=num_joints,
         device=args_cli.device,
+        camera_setup=camera_setup,
+        render_camera_names=render_camera_names,
+        success_distance_threshold=success_distance_threshold,
     ) as env:
         for ep in range(num_rollouts):
             obs = env.reset()
@@ -115,6 +126,12 @@ def main() -> None:
                 qpos_hist.append(obs["qpos"].copy())
                 action_hist.append(action.copy())
                 obs, success = env.step(action)
+                if want_video and ep == 0:
+                    frame = obs.get("render_images", {}).get(video_camera)
+                    if frame is None:
+                        frame = obs["images"].get(camera_names[0])
+                    if frame is not None:
+                        video_frames.append(frame.copy())
                 if success:
                     break
 
@@ -148,9 +165,37 @@ def main() -> None:
     with open(metrics_path, "w") as f:
         json.dump(metrics, f, indent=2)
 
+    video_path = None
+    if want_video:
+        video_path = os.path.join(results_dir, f"inference_{video_camera}_30s_1080p.mp4")
+        write_fixed_length_video(
+            video_frames,
+            output_path=video_path,
+            fps=eval_cfg.get("video_fps", 30),
+            seconds=eval_cfg.get("video_seconds", 30),
+            width=eval_cfg.get("video_width", 1920),
+            height=eval_cfg.get("video_height", 1080),
+        )
+
     print(f"\nEvaluation results — success rate: {success_rate:.1%}  "
           f"mean length: {mean_len:.0f}")
     print(f"Metrics saved to: {metrics_path}")
+    if video_path:
+        print(f"Video saved to: {video_path}")
+    write_experiment_summary(
+        os.path.join(results_dir, "experiment_summary.json"),
+        {
+            "stage": "eval",
+            "task": cfg["task"],
+            "checkpoint": checkpoint_dir,
+            "metrics": metrics,
+            "video_path": video_path,
+            "video_camera": video_camera,
+            "video_seconds": eval_cfg.get("video_seconds", 30),
+            "video_fps": eval_cfg.get("video_fps", 30),
+            "seed": args_cli.seed,
+        },
+    )
 
     simulation_app.close()
 

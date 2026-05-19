@@ -43,12 +43,16 @@ class OpenArmIsaacDataset(Dataset):
 
     def __init__(
         self,
-        dataset_dir: str,
+        dataset_dir: str | Sequence[str],
         camera_names: Sequence[str],
         chunk_size: int,
         norm_stats: dict | None = None,
     ) -> None:
-        self.dataset_dir = dataset_dir
+        if isinstance(dataset_dir, (str, os.PathLike)):
+            self.dataset_dirs = [os.fspath(dataset_dir)]
+        else:
+            self.dataset_dirs = [os.fspath(path) for path in dataset_dir]
+        self.dataset_dir = self.dataset_dirs[0] if len(self.dataset_dirs) == 1 else os.pathsep.join(self.dataset_dirs)
         self.camera_names = list(camera_names)
         self.chunk_size = chunk_size
         self.norm_stats = norm_stats
@@ -56,7 +60,7 @@ class OpenArmIsaacDataset(Dataset):
         self._episodes = self._index_episodes()
         if not self._episodes:
             raise RuntimeError(
-                f"No successful episodes found in '{dataset_dir}'. "
+                f"No successful episodes found in '{self.dataset_dir}'. "
                 "Run collect_openarm_demos.py first."
             )
 
@@ -67,21 +71,24 @@ class OpenArmIsaacDataset(Dataset):
     def _index_episodes(self) -> list[dict]:
         """Walk dataset_dir and build an index of successful episodes."""
         episodes: list[dict] = []
-        hdf5_files = sorted(
-            f for f in os.listdir(self.dataset_dir) if f.endswith(".hdf5")
-        )
-        for fname in hdf5_files:
-            path = os.path.join(self.dataset_dir, fname)
-            with h5py.File(path, "r") as f:
-                for key in sorted(f.keys()):
-                    if not key.startswith("episode_"):
-                        continue
-                    grp = f[key]
-                    # skip episodes that were not marked successful
-                    if not bool(grp["meta/success"][()]):
-                        continue
-                    T: int = int(grp["observations/qpos"].shape[0])
-                    episodes.append({"file": path, "key": key, "length": T})
+        for dataset_dir in self.dataset_dirs:
+            if not os.path.isdir(dataset_dir):
+                continue
+            hdf5_files = sorted(
+                f for f in os.listdir(dataset_dir) if f.endswith(".hdf5")
+            )
+            for fname in hdf5_files:
+                path = os.path.join(dataset_dir, fname)
+                with h5py.File(path, "r") as f:
+                    for key in sorted(f.keys()):
+                        if not key.startswith("episode_"):
+                            continue
+                        grp = f[key]
+                        # skip episodes that were not marked successful
+                        if not bool(grp["meta/success"][()]):
+                            continue
+                        T: int = int(grp["observations/qpos"].shape[0])
+                        episodes.append({"file": path, "key": key, "length": T})
         return episodes
 
     @staticmethod
