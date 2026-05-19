@@ -23,9 +23,9 @@ openarm_act_project/
     openarm_lift_act/
   scripts/
     export_openarm_rsl_rl_expert.py # RSL-RL checkpoint → policy.pt
-    collect_openarm_demos.py   # Step A — demo collection
+    collect_openarm_demos.py   # Step A — demo collection (RSL-RL / DAgger / keyboard)
     validate_openarm_dataset.py # Dataset schema/shape validation
-    augment_openarm_dataset.py  # Action-noise dataset generation
+    augment_openarm_dataset.py  # Action-noise dataset generation (clean+noise experiments)
     train_act_openarm.py       # Step B — ACT training
     eval_act_openarm.py        # Step C — simulation evaluation
     deploy_act_openarm.py      # Step D — live deployment
@@ -55,7 +55,7 @@ pip install -e .
 **2. Collect demonstrations**
 
 Export or provide an existing RSL-RL expert policy from `openarm_isaac_lab`,
-then set `collection.expert_checkpoint` in the reach config to the exported
+then set `collection.expert_checkpoint` in the task config to the exported
 `policy.pt`.
 
 ```bash
@@ -70,6 +70,10 @@ then set `collection.expert_checkpoint` in the reach config to the exported
   --config configs/act_openarm_reach.yaml
 ```
 
+With `collection.expert_source: dagger`, data collection uses DAgger-style roll-ins
+from the ACT student policy while retaining RSL-RL expert labels, and applies
+engineered action noise via `collection.noise.*` for robust trajectories.
+
 **3. Validate the clean dataset**
 
 ```bash
@@ -83,6 +87,9 @@ then set `collection.expert_checkpoint` in the reach config to the exported
 /isaac-sim/python.sh scripts/train_act_openarm.py \
   --config configs/act_openarm_reach.yaml
 ```
+
+Set `training.algorithm: dagger` for DAgger dataset training runs.
+The trainer and policy wrappers enforce action/state/chunk dimension checks.
 
 **5. Create the action-noise dataset**
 

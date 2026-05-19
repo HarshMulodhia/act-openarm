@@ -324,6 +324,8 @@ def main() -> None:
                 expert_policy.reset()
             except Exception:
                 pass
+        if student_policy is not None:
+            student_policy.reset()
         if teleop is not None:
             teleop.reset()
 
