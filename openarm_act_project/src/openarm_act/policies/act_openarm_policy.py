@@ -115,7 +115,10 @@ class ACTOpenArmPolicy:
         model_cfg = config.get("model", {})
         obs_cfg = config.get("observation", {})
         chunk_size: int = model_cfg.get("chunk_size", 100)
-        num_joints: int = obs_cfg.get("num_joints", 6)
+        num_joints: int = obs_cfg.get("num_joints", 7)
+        num_queries: int = model_cfg.get("num_queries", chunk_size)
+        if num_queries != chunk_size:
+            raise RuntimeError(f"Config mismatch: model.num_queries={num_queries} but model.chunk_size={chunk_size}.")
         ckpt_path = cls._find_checkpoint(checkpoint_dir)
 
         # Build policy using ACT factory arguments
@@ -249,6 +252,8 @@ class ACTOpenArmPolicy:
         qpos_t = (
             torch.from_numpy(qpos_norm).float().unsqueeze(0).to(self.device)
         )  # [1, J]
+        if qpos_t.shape[-1] != self.num_joints:
+            raise RuntimeError(f"qpos dim {qpos_t.shape[-1]} does not match policy num_joints={self.num_joints}.")
 
         # Stack camera images into [1, n_cam, C, H, W]
         img_list = []
@@ -264,6 +269,10 @@ class ACTOpenArmPolicy:
             a_hat, _, _ = self._model(qpos_t, image_data, None, None)
 
         actions = a_hat.squeeze(0).cpu().numpy()  # [chunk, J]
+        if actions.ndim != 2 or actions.shape[1] != self.num_joints:
+            raise RuntimeError(
+                f"ACT output shape {actions.shape} does not match [chunk_size,{self.num_joints}]."
+            )
 
         # Denormalise if stats are available
         if self.norm_stats is not None:

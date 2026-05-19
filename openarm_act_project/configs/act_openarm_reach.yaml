@@ -11,19 +11,28 @@ collection:
   num_episodes: 200
   dataset_dir: data/demos_hdf5/openarm_reach
   step_hz: 30
-  expert_source: rsl_rl      # rsl_rl | keyboard
+  mode: dagger               # rsl_rl | keyboard | dagger (backward-compatible alias: expert_source)
   expert_checkpoint: null    # required for rsl_rl unless use_pretrained_checkpoint is true
   use_pretrained_checkpoint: false
   teleop_device: keyboard    # used only when expert_source is keyboard
   num_success_steps: 10     # consecutive success steps to mark an episode done
   max_timesteps: 400
   success_distance_threshold: 0.03
+  dagger:
+    student_checkpoint_dir: checkpoints/openarm_reach_act
+    beta: 0.5
+  noise:
+    enabled: true
+    gaussian_std: 0.01
+    sinusoidal_amplitude: 0.005
+    sinusoidal_period_steps: 60
+    seed: 42
 
 augmentation:
-  enabled: false
+  enabled: true
   source_dataset_dir: data/demos_hdf5/openarm_reach
   output_dataset_dir: data/demos_hdf5/openarm_reach_noise_gaussian_001
-  noise_type: gaussian       # gaussian | sinusoidal
+  noise_type: gaussian       # gaussian | sinusoidal (complements collection.noise for clean+noise ablations)
   gaussian_std: 0.01         # recommended default; use 0.03 for stronger ablation
   sinusoidal_amplitude: 0.01
   sinusoidal_period_steps: 60
@@ -103,6 +112,7 @@ observation:
 # ---------------------------------------------------------------------------
 training:
   seed: 42
+  algorithm: dagger          # bc | dagger
   dataset_mode: clean        # clean | clean_plus_noise | noise
   clean_dataset_dir: data/demos_hdf5/openarm_reach
   noise_dataset_dir: data/demos_hdf5/openarm_reach_noise_gaussian_001

@@ -88,9 +88,13 @@ def build_policy(cfg: dict, device: str) -> ACTPolicy:
     model_cfg = cfg.get("model", {})
     obs_cfg = cfg.get("observation", {})
     train_cfg = cfg.get("training", {})
+    chunk_size = int(model_cfg.get("chunk_size", 100))
+    num_queries = int(model_cfg.get("num_queries", chunk_size))
+    if num_queries != chunk_size:
+        raise RuntimeError(f"Config mismatch: model.num_queries={num_queries} but model.chunk_size={chunk_size}.")
     policy_config = {
         "lr": train_cfg.get("lr", 1e-5),
-        "num_queries": model_cfg.get("chunk_size", 100),
+        "num_queries": chunk_size,
         "kl_weight": model_cfg.get("kl_weight", 10),
         "hidden_dim": model_cfg.get("hidden_dim", 512),
         "dim_feedforward": model_cfg.get("dim_feedforward", 3200),
@@ -139,6 +143,9 @@ def main() -> None:
     train_cfg = cfg.get("training", {})
     obs_cfg = cfg.get("observation", {})
     model_cfg = cfg.get("model", {})
+    algo = str(train_cfg.get("algorithm", "bc")).lower()
+    if algo not in {"bc", "dagger"}:
+        raise RuntimeError(f"Unsupported training.algorithm: {algo}")
 
     seed: int = args_cli.seed if args_cli.seed is not None else train_cfg.get("seed", 42)
     random.seed(seed)
@@ -171,6 +178,7 @@ def main() -> None:
     # Dataset
     camera_names: list[str] = obs_cfg.get("training_camera_names", obs_cfg.get("camera_names", ["cam_main"]))
     chunk_size: int = model_cfg.get("chunk_size", 100)
+    num_joints: int = obs_cfg.get("num_joints", 7)
 
     validation_reports = []
     for dataset_dir in dataset_dirs:
@@ -190,6 +198,12 @@ def main() -> None:
 
     dataset = OpenArmIsaacDataset(dataset_dirs, camera_names, chunk_size)
     norm_stats = dataset.compute_norm_stats()
+    if norm_stats["qpos_mean"].shape[0] != num_joints or norm_stats["action_mean"].shape[0] != num_joints:
+        raise RuntimeError(
+            "Dataset dimension mismatch: "
+            f"qpos_mean={norm_stats['qpos_mean'].shape}, action_mean={norm_stats['action_mean'].shape}, "
+            f"expected [{num_joints}]."
+        )
     save_norm_stats(norm_stats, checkpoint_dir)
     dataset.norm_stats = norm_stats
     shutil.copy2(args_cli.config, os.path.join(checkpoint_dir, "resolved_config.yaml"))
@@ -238,6 +252,16 @@ def main() -> None:
         for batch in dataloader:
             qpos = batch["qpos"].to(device)           # [B, chunk, J]
             actions = batch["action"].to(device)       # [B, chunk, J]
+            if qpos.shape[-1] != num_joints or actions.shape[-1] != num_joints:
+                raise RuntimeError(
+                    f"Batch dimension mismatch: qpos {tuple(qpos.shape)}, actions {tuple(actions.shape)}, "
+                    f"expected last dim {num_joints}."
+                )
+            if qpos.shape[1] != chunk_size or actions.shape[1] != chunk_size:
+                raise RuntimeError(
+                    f"Chunk mismatch: qpos {tuple(qpos.shape)}, actions {tuple(actions.shape)}, "
+                    f"expected chunk_size={chunk_size}."
+                )
             images = {
                 cam: batch["images"][cam].to(device)
                 for cam in camera_names

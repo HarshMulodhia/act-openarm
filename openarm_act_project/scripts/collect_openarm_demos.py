@@ -53,6 +53,7 @@ import time
 
 import gymnasium as gym
 import omni.log
+import numpy as np
 import torch
 import yaml
 
@@ -76,6 +77,8 @@ if _SRC_DIR not in sys.path:
 
 from openarm_act.envs.openarm_isaac_env import configure_viewer_env_cfg, warmup_viewer  # noqa: E402
 from openarm_act.envs.openarm_isaac_env import configure_camera_env_cfg  # noqa: E402
+from openarm_act.policies.act_openarm_policy import ACTOpenArmPolicy  # noqa: E402
+from openarm_act.utils.io_utils import load_norm_stats  # noqa: E402
 from openarm_act.utils.io_utils import EpisodeWriter  # noqa: E402
 
 
@@ -129,13 +132,12 @@ def _get_qpos_from_env(env, num_joints: int):
         robot = env.scene["robot"]
         joint_ids, _ = robot.find_joints([f"openarm_joint{i}" for i in range(1, num_joints + 1)])
         return robot.data.joint_pos[0, joint_ids].detach().cpu().numpy().astype("float32")
-    except Exception:
-        return __import__("numpy").zeros(num_joints, dtype="float32")
+    except Exception as exc:
+        omni.log.warn(f"Failed to read joint positions from env; using zeros fallback: {exc}")
+        return np.zeros(num_joints, dtype="float32")
 
 
 def _capture_camera_image(env, camera_name: str, height: int, width: int):
-    import numpy as np
-
     sensor = None
     sensors = getattr(env.scene, "sensors", {})
     if hasattr(sensors, "get"):
@@ -161,6 +163,53 @@ def _capture_camera_image(env, camera_name: str, height: int, width: int):
     if img.shape[-1] == 4:
         img = img[..., :3]
     return img.astype("uint8")
+
+
+def _resolve_action_dim_from_env(env) -> int | None:
+    space = getattr(env, "action_space", None)
+    shape = getattr(space, "shape", None)
+    if shape is None or len(shape) == 0:
+        return None
+    return int(shape[-1])
+
+
+def _ensure_vector_dim(name: str, vec: np.ndarray, expected: int) -> None:
+    if vec.ndim != 1 or vec.shape[0] != expected:
+        raise RuntimeError(f"{name} has shape {vec.shape}; expected [{expected}].")
+
+
+def _add_action_noise(action: np.ndarray, noise_cfg: dict, step_idx: int, rng: np.random.Generator) -> np.ndarray:
+    if not noise_cfg.get("enabled", False):
+        return action.astype(np.float32)
+    gaussian_std = float(noise_cfg.get("gaussian_std", 0.0))
+    sinusoidal_amp = float(noise_cfg.get("sinusoidal_amplitude", 0.0))
+    sinusoidal_period = max(int(noise_cfg.get("sinusoidal_period_steps", 60)), 1)
+    noise = np.zeros_like(action, dtype=np.float32)
+    if gaussian_std > 0.0:
+        noise += rng.normal(0.0, gaussian_std, size=action.shape).astype(np.float32)
+    if sinusoidal_amp > 0.0:
+        phase = np.linspace(0.0, np.pi, num=action.shape[0], dtype=np.float32)
+        noise += sinusoidal_amp * np.sin((2.0 * np.pi * step_idx / sinusoidal_period) + phase)
+    return (action + noise).astype(np.float32)
+
+
+def _obs_for_student_policy(
+    env,
+    obs_raw,
+    camera_names: list[str],
+    num_joints: int,
+    image_height: int,
+    image_width: int,
+) -> dict[str, object]:
+    qpos = _get_qpos_from_env(env, num_joints)
+    images: dict[str, np.ndarray] = {}
+    for cam in camera_names:
+        raw = (obs_raw.get(f"images/{cam}") or obs_raw.get(cam)) if isinstance(obs_raw, dict) else None
+        if raw is not None:
+            images[cam] = raw.squeeze(0).cpu().numpy().astype("uint8")
+        else:
+            images[cam] = _capture_camera_image(env, cam, image_height, image_width)
+    return {"qpos": qpos, "images": images}
 
 
 def _reach_success(env, threshold: float) -> bool:
@@ -202,7 +251,13 @@ def main() -> None:
     image_height: int = obs_cfg.get("image_height", 480)
     image_width: int = obs_cfg.get("image_width", 640)
     task_name: str = cfg.get("task_name", task)
-    expert_source: str = coll_cfg.get("expert_source", "rsl_rl")
+    # Backward compatibility: older configs used `collection.expert_source`.
+    collection_mode: str = coll_cfg.get("mode", coll_cfg.get("expert_source", "rsl_rl"))
+    if collection_mode not in {"rsl_rl", "keyboard", "dagger"}:
+        raise ValueError(f"Unsupported collection.mode: {collection_mode}")
+    dagger_cfg: dict = coll_cfg.get("dagger", {})
+    noise_cfg: dict = coll_cfg.get("noise", {})
+    noise_rng = np.random.default_rng(int(noise_cfg.get("seed", 42)))
 
     os.makedirs(dataset_dir, exist_ok=True)
     hdf5_path = os.path.join(dataset_dir, "demos.hdf5")
@@ -217,12 +272,30 @@ def main() -> None:
     env_cfg.terminations.time_out = None
 
     env = gym.make(task, cfg=env_cfg).unwrapped
-    expert_policy = _load_expert_policy(coll_cfg, args_cli.device) if expert_source == "rsl_rl" else None
+    env_action_dim = _resolve_action_dim_from_env(env)
+    if env_action_dim is not None and env_action_dim != int(obs_cfg.get("num_joints", 7)):
+        raise RuntimeError(
+            f"Configuration mismatch: observation.num_joints={obs_cfg.get('num_joints', 7)} "
+            f"but env action dim is {env_action_dim} for task {task}."
+        )
+    expert_policy = _load_expert_policy(coll_cfg, args_cli.device) if collection_mode in {"rsl_rl", "dagger"} else None
+    student_policy = None
+    if collection_mode == "dagger":
+        student_checkpoint = _resolve_project_path(dagger_cfg.get("student_checkpoint_dir"))
+        if not student_checkpoint:
+            raise RuntimeError("collection.dagger.student_checkpoint_dir is required for collection.mode=dagger.")
+        student_policy = ACTOpenArmPolicy.from_checkpoint(student_checkpoint, cfg, device=args_cli.device)
+        norm_stats = load_norm_stats(student_checkpoint)
+        if norm_stats is not None:
+            student_policy.norm_stats = norm_stats
+        student_policy._model.eval()
+        print(f"Loaded ACT student policy: {student_checkpoint}")
+    dagger_beta = float(dagger_cfg.get("beta", 0.5))
 
     # -----------------------------------------------------------------------
     # Teleoperation device
     # -----------------------------------------------------------------------
-    teleop = Se3Keyboard(Se3KeyboardCfg(pos_sensitivity=0.2, rot_sensitivity=0.5)) if expert_source == "keyboard" else None
+    teleop = Se3Keyboard(Se3KeyboardCfg(pos_sensitivity=0.2, rot_sensitivity=0.5)) if collection_mode == "keyboard" else None
 
     quit_requested = False
 
@@ -241,7 +314,7 @@ def main() -> None:
     collected = 0
     step_period = 1.0 / step_hz
 
-    print(f"\nCollecting {num_episodes} demonstrations for task '{task}' with expert_source={expert_source}.")
+    print(f"\nCollecting {num_episodes} demonstrations for task '{task}' with collection_mode={collection_mode}.")
     if teleop is not None:
         print("Controls: WASD/arrows — EE translation | Q — quit\n")
 
@@ -253,6 +326,8 @@ def main() -> None:
                 expert_policy.reset()
             except Exception:
                 pass
+        if student_policy is not None:
+            student_policy.reset()
         if teleop is not None:
             teleop.reset()
 
@@ -274,7 +349,23 @@ def main() -> None:
                     action_t = expert_policy(policy_obs)
                 if isinstance(action_t, tuple):
                     action_t = action_t[0]
-                action_np = action_t.squeeze(0).detach().cpu().numpy().astype("float32")
+                expert_action_np = action_t.squeeze(0).detach().cpu().numpy().astype("float32")
+                _ensure_vector_dim("expert_action", expert_action_np, obs_cfg.get("num_joints", 7))
+                if student_policy is not None:
+                    student_obs = _obs_for_student_policy(
+                        env, obs_raw, camera_names, obs_cfg.get("num_joints", 7), image_height, image_width
+                    )
+                    student_action_np = student_policy.get_action(student_obs["qpos"], student_obs["images"])
+                    _ensure_vector_dim("student_action", student_action_np, obs_cfg.get("num_joints", 7))
+                    use_expert_for_execution = bool(noise_rng.random() < dagger_beta)
+                    exec_action_np = expert_action_np if use_expert_for_execution else student_action_np
+                    action_np = expert_action_np
+                else:
+                    exec_action_np = expert_action_np
+                    action_np = expert_action_np
+                exec_action_np = _add_action_noise(exec_action_np, noise_cfg, step_count, noise_rng)
+                _ensure_vector_dim("exec_action", exec_action_np, obs_cfg.get("num_joints", 7))
+                action_t = torch.from_numpy(exec_action_np).float().unsqueeze(0).to(args_cli.device)
             else:
                 teleop_cmd = teleop.advance()
                 if isinstance(teleop_cmd, tuple):
@@ -285,7 +376,10 @@ def main() -> None:
                     delta_pose = delta_pose.detach().cpu().numpy()
                 num_joints = obs_cfg.get("num_joints", 7)
                 action_np = delta_pose[:num_joints].astype("float32")
-                action_t = torch.from_numpy(action_np).float().unsqueeze(0).to(args_cli.device)
+                _ensure_vector_dim("teleop_action", action_np, num_joints)
+                exec_action_np = _add_action_noise(action_np, noise_cfg, step_count, noise_rng)
+                _ensure_vector_dim("exec_action", exec_action_np, num_joints)
+                action_t = torch.from_numpy(exec_action_np).float().unsqueeze(0).to(args_cli.device)
 
             obs_raw, _rew, terminated, truncated, info = env.step(action_t)
             step_count += 1
@@ -323,7 +417,6 @@ def main() -> None:
         print(f" {step_count} steps — {status}")
 
         # Write episode
-        import numpy as np
         with EpisodeWriter(hdf5_path, episode_idx, camera_names, task_name) as w:
             for t in range(len(episode_qpos)):
                 w.add_timestep(

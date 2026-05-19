@@ -79,7 +79,7 @@ def main() -> None:
     max_timesteps: int = eval_cfg.get("max_timesteps", 400)
     camera_names: list[str] = obs_cfg.get("training_camera_names", obs_cfg.get("camera_names", ["cam_main"]))
     render_camera_names: list[str] = obs_cfg.get("render_camera_names", [])
-    num_joints: int = obs_cfg.get("num_joints", 6)
+    num_joints: int = obs_cfg.get("num_joints", 7)
     camera_setup: dict = obs_cfg.get("camera_setup", {})
     success_distance_threshold = eval_cfg.get("success_distance_threshold", 0.03)
 

@@ -11,8 +11,33 @@ collection:
   num_episodes: 300
   dataset_dir: data/demos_hdf5/openarm_lift
   step_hz: 30
+  mode: dagger               # rsl_rl | keyboard | dagger (backward-compatible alias: expert_source)
+  expert_checkpoint: null    # required for rsl_rl unless use_pretrained_checkpoint is true
+  use_pretrained_checkpoint: false
   teleop_device: keyboard
   num_success_steps: 10
+  max_timesteps: 600
+  success_distance_threshold: 0.03
+  dagger:
+    student_checkpoint_dir: checkpoints/openarm_lift_act
+    beta: 0.5
+  noise:
+    enabled: true
+    gaussian_std: 0.01
+    sinusoidal_amplitude: 0.005
+    sinusoidal_period_steps: 60
+    seed: 42
+
+augmentation:
+  enabled: true
+  source_dataset_dir: data/demos_hdf5/openarm_lift
+  output_dataset_dir: data/demos_hdf5/openarm_lift_noise_gaussian_001
+  noise_type: gaussian       # complements collection.noise for clean+noise ablations
+  gaussian_std: 0.01
+  sinusoidal_amplitude: 0.01
+  sinusoidal_period_steps: 60
+  seed: 42
+  clip_to_source_range: false
 
 # ---------------------------------------------------------------------------
 # ACT model architecture
@@ -37,13 +62,17 @@ observation:
     - cam_main
   image_height: 480
   image_width: 640
-  num_joints: 7
+  num_joints: 7             # OpenArm manipulator DOF (must match env action/state dims)
 
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
 training:
   seed: 42
+  algorithm: dagger          # bc | dagger
+  dataset_mode: clean_plus_noise
+  clean_dataset_dir: data/demos_hdf5/openarm_lift
+  noise_dataset_dir: data/demos_hdf5/openarm_lift_noise_gaussian_001
   num_epochs: 3000
   batch_size: 8
   lr: 1.0e-5

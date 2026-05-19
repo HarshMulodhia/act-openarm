@@ -131,6 +131,12 @@ class OpenArmIsaacEnv:
         env_cfg.terminations.time_out = None
 
         self._env = gym.make(task, cfg=env_cfg).unwrapped
+        self._env_action_dim = self._infer_action_dim()
+        if self._env_action_dim is not None and self._env_action_dim != self.num_joints:
+            raise RuntimeError(
+                f"Action dimension mismatch for task '{self.task}': "
+                f"configured num_joints={self.num_joints}, env action dim={self._env_action_dim}."
+            )
 
     # ------------------------------------------------------------------
     # Public API
@@ -157,6 +163,10 @@ class OpenArmIsaacEnv:
         Returns:
             Tuple of ``(observation_dict, success_flag)``.
         """
+        if action.ndim != 1 or action.shape[0] != self.num_joints:
+            raise ValueError(f"Action shape {action.shape} does not match [{self.num_joints}].")
+        if self._env_action_dim is not None and action.shape[0] != self._env_action_dim:
+            raise ValueError(f"Action shape {action.shape} does not match env action dim {self._env_action_dim}.")
         action_t = torch.from_numpy(action).float().unsqueeze(0).to(self.device)
         obs_raw, _reward, terminated, truncated, info = self._env.step(action_t)
         success: bool = bool(info.get("success", terminated))
@@ -235,7 +245,13 @@ class OpenArmIsaacEnv:
             qpos_t = obs_raw
 
         if qpos_t is not None:
-            result["qpos"] = qpos_t.squeeze(0).cpu().numpy().astype(np.float32)
+            qpos = qpos_t.squeeze(0).cpu().numpy().astype(np.float32)
+            if qpos.ndim != 1 or qpos.shape[0] != self.num_joints:
+                raise RuntimeError(
+                    f"State dimension mismatch for task '{self.task}': "
+                    f"qpos shape {qpos.shape}, configured num_joints={self.num_joints}."
+                )
+            result["qpos"] = qpos
         else:
             result["qpos"] = np.zeros(self.num_joints, dtype=np.float32)
 
@@ -265,6 +281,13 @@ class OpenArmIsaacEnv:
                 result["render_images"][cam] = scene_img
 
         return result
+
+    def _infer_action_dim(self) -> int | None:
+        space = getattr(self._env, "action_space", None)
+        shape = getattr(space, "shape", None)
+        if shape is None or len(shape) == 0:
+            return None
+        return int(shape[-1])
 
     # ------------------------------------------------------------------
     # Context manager support
