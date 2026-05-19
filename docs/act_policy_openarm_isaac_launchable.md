@@ -6,11 +6,11 @@ Train and deploy an ACT (Action Chunking Transformer) policy for OpenArm tasks i
 
 ## 2) Upstream Repositories and Responsibilities
 
-- **OpenArm**: `https://github.com/enactic/openarm`
+- [OpenArm](https://github.com/enactic/openarm)
   - Hardware/software hub and references for OpenArm ecosystem.
-- **ACT**: `https://github.com/tonyzhaozh/act`
+- [ACT](https://github.com/tonyzhaozh/act)
   - Core ACT model, policy wrappers, and training utilities.
-- **Isaac Launchable**: `https://github.com/isaac-sim/isaac-launchable`
+- [Isaac Launchable](https://github.com/isaac-sim/isaac-launchable)
   - Brev-friendly cloud environment for Isaac Sim + Isaac Lab.
 
 Use these as upstream dependencies; keep custom integration in a separate project layer.
