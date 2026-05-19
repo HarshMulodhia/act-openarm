@@ -1,38 +1,47 @@
-# ACT Policy on OpenArm in Isaac Sim (Isaac Launchable on NVIDIA Brev)
+# ACT Policy on OpenArm in Isaac Sim
 
 ## 1) Goal
 
-Train and deploy an ACT (Action Chunking Transformer) policy for OpenArm tasks in Isaac Sim/Isaac Lab using cloud infrastructure (Isaac Launchable on NVIDIA Brev), while keeping upstream repositories clean and using Hugging Face for dataset/model versioning.
+Train and deploy an ACT (Action Chunking Transformer) policy for OpenArm tasks in Isaac Sim/Isaac Lab, while keeping upstream repositories clean.
 
 ## 2) Upstream Repositories and Responsibilities
 
 - [OpenArm](https://github.com/enactic/openarm)
   - Hardware/software hub and references for OpenArm ecosystem.
+- [openarm_isaac_lab](https://github.com/enactic/openarm_isaac_lab)
+  - Isaac Lab extension with OpenArm task environments (reach, lift, cabinet, bimanual reach) and RL training scripts.
 - [ACT](https://github.com/tonyzhaozh/act)
   - Core ACT model, policy wrappers, and training utilities.
-- [Isaac Launchable](https://github.com/isaac-sim/isaac-launchable)
-  - Brev-friendly cloud environment for Isaac Sim + Isaac Lab.
+- [IsaacLab](https://github.com/isaac-sim/IsaacLab)
+  - Isaac Lab framework for robot learning in Isaac Sim.
 
-Use these as upstream dependencies; keep custom integration in a separate project layer.
+Use these as upstream dependencies; keep custom integration in `openarm_act_project/`.
 
-## 3) Final Code Structure (separate integration layer)
+## 3) Actual Workspace Structure
 
 ```text
-~/workspace/
-  isaac-launchable/                  # launchable runtime + containers (upstream)
-  isaac-lab/                         # Isaac Lab framework (from launchable/upstream)
-  openarm/                           # OpenArm upstream repo
+/workspace/
   act/                               # ACT upstream repo
-  openarm_act_project/               # your owned integration project
-    README.md
-    pyproject.toml
+    conda_env.yaml
+    policy.py
+    imitate_episodes.py
+    utils.py
+    constants.py
+    detr/                            # DETR backbone used by ACT
+    assets/                          # MuJoCo assets (viperx reference)
+  isaaclab/                          # Isaac Lab framework (upstream)
+    source/
+    docker/
+    tools/
+  openarm/                           # OpenArm hardware/software meta repo (upstream)
+    website/                         # Docusaurus documentation site
+  openarm_act_project/               # Owned integration project
     configs/
       act_openarm_reach.yaml
-      act_openarm_lift.yaml
     data/
       demos_hdf5/
     checkpoints/
-      openarm_act/
+      openarm_reach_act/
     scripts/
       collect_openarm_demos.py
       train_act_openarm.py
@@ -47,30 +56,57 @@ Use these as upstream dependencies; keep custom integration in a separate projec
       policies/
         act_openarm_policy.py
       utils/
-        hdf5_utils.py
-        metrics.py
-        viz.py
+        io_utils.py
+        viz_utils.py
+  openarm_isaac_lab/                 # OpenArm Isaac Lab extension (upstream)
+    source/openarm/
+      openarm/tasks/manager_based/openarm_manipulation/
+        unimanual/
+          reach/
+          lift/
+          cabinet/
+        bimanual/
+          reach/
+        assets/
+        usds/
+    scripts/reinforcement_learning/  # RL training (rl_games, skrl, rsl_rl)
+    video/                           # Demo GIFs
+  tree.log
 ```
 
 ### Why this structure is optimized
 
 1. **Isolation**: no local forks of upstream repos required.
 2. **Upgrade safety**: upstream pull/update remains straightforward.
-3. **Reproducibility**: configs/data/checkpoints/scripts are colocated.
+3. **Reproducibility**: configs/data/checkpoints/scripts are colocated in `openarm_act_project/`.
 4. **Operational clarity**: one script per lifecycle phase.
 
-## 4) Brev + Isaac Launchable Setup
+## 4) Environment Setup
 
-1. Create/deploy Isaac Launchable in NVIDIA Brev.
-2. Open VS Code endpoint and verify Isaac components are present.
-3. In the cloud workspace:
+1. Start an Isaac Sim environment (NVIDIA Brev / local GPU workstation).
+2. Open VS Code and verify Isaac Sim and Isaac Lab are accessible.
+3. In the workspace:
 
 ```bash
-cd ~/workspace
+cd /workspace
 git clone https://github.com/enactic/openarm.git
+git clone https://github.com/enactic/openarm_isaac_lab.git
 git clone https://github.com/tonyzhaozh/act.git
-# Isaac Launchable/Isaac Lab are already provided by the launchable image.
+# isaaclab/ is pre-installed or cloned separately from isaac-sim/IsaacLab
 mkdir -p openarm_act_project
+```
+
+4. Install the OpenArm extension:
+
+```bash
+cd /workspace/isaaclab
+python -m pip install -e /workspace/openarm_isaac_lab/source/openarm
+```
+
+5. Verify available task environments:
+
+```bash
+python /workspace/openarm_isaac_lab/scripts/tools/list_envs.py
 ```
 
 ## 5) Data Contract for ACT Training
@@ -98,15 +134,25 @@ Rules:
 
 ### Step A — Collect demonstrations (Isaac Lab)
 
-- Use OpenArm task environment in Isaac Sim/Isaac Lab.
+- Use an OpenArm task environment (e.g., `OpenArmUnimanualReach-v0`).
 - Record images + `qpos` + applied/target action each timestep.
-- Save successful episodes into `data/demos_hdf5/`.
+- Save successful episodes into `openarm_act_project/data/demos_hdf5/`.
+
+```bash
+python /workspace/openarm_act_project/scripts/collect_openarm_demos.py \
+  --config /workspace/openarm_act_project/configs/act_openarm_reach.yaml
+```
 
 ### Step B — Train ACT
 
 - Use ACT repo as model/training dependency.
-- Use custom dataset adapter to map Isaac HDF5 to ACT inputs.
-- Train from config (`configs/*.yaml`) and save checkpoints to `checkpoints/openarm_act/`.
+- Use `src/openarm_act/datasets/openarm_isaac_dataset.py` to map Isaac HDF5 to ACT inputs.
+- Train from config and save checkpoints to `checkpoints/openarm_reach_act/`.
+
+```bash
+python /workspace/openarm_act_project/scripts/train_act_openarm.py \
+  --config /workspace/openarm_act_project/configs/act_openarm_reach.yaml
+```
 
 ### Step C — Evaluate in simulation
 
@@ -114,13 +160,36 @@ Rules:
 - Log task success rate, trajectory smoothness, and episode length.
 - Keep the best checkpoint based on task success, not only train loss.
 
+```bash
+python /workspace/openarm_act_project/scripts/eval_act_openarm.py \
+  --config /workspace/openarm_act_project/configs/act_openarm_reach.yaml \
+  --checkpoint /workspace/openarm_act_project/checkpoints/openarm_reach_act/
+```
+
 ### Step D — Deploy policy in Isaac Sim
 
 - Load best ACT checkpoint.
 - Use chunked inference loop to emit joint targets.
 - Run viewer-enabled validation for qualitative behavior checks.
 
-## 7) Optimization Practices
+```bash
+python /workspace/openarm_act_project/scripts/deploy_act_openarm.py \
+  --config /workspace/openarm_act_project/configs/act_openarm_reach.yaml \
+  --checkpoint /workspace/openarm_act_project/checkpoints/openarm_reach_act/
+```
+
+## 7) Available OpenArm Tasks
+
+| Task ID | Type | Description |
+|---|---|---|
+| `OpenArmUnimanualReach-v0` | Unimanual | Reach to target position |
+| `OpenArmUnimanualLift-v0` | Unimanual | Lift an object |
+| `OpenArmUnimanualCabinet-v0` | Unimanual | Open cabinet drawer |
+| `OpenArmBimanualReach-v0` | Bimanual | Bimanual coordinated reach |
+
+RL baseline training scripts for these tasks are in `openarm_isaac_lab/scripts/reinforcement_learning/` (supports rl_games, skrl, rsl_rl).
+
+## 8) Optimization Practices
 
 1. **Demonstration quality first**
    - Expert consistency matters more than raw dataset volume.
@@ -129,27 +198,11 @@ Rules:
 3. **Chunk size tuning**
    - Larger chunks improve throughput; smaller chunks improve responsiveness.
 4. **Curriculum progression**
-   - Train on simpler tasks first (reach) before harder tasks (lift/manipulation).
+   - Train on simpler tasks first (reach) before harder tasks (lift/cabinet).
 5. **Checkpoint strategy**
    - Save frequent checkpoints + retain top-k by evaluation success.
-6. **Cloud efficiency**
+6. **Headless vs. viewer**
    - Run collection/evaluation with viewer when debugging; headless for bulk jobs.
-
-## 8) Hugging Face Integration (recommended)
-
-Use Hugging Face for provenance and portability.
-
-### Dataset
-- Publish cleaned demonstration snapshots to a Hugging Face dataset repo.
-- Include schema documentation and collection metadata.
-
-### Model
-- Publish selected ACT checkpoints to a Hugging Face model repo.
-- Add a model card with:
-  - task and simulator version
-  - dataset reference/version
-  - hyperparameters
-  - evaluation metrics and limitations
 
 ## 9) Minimal Script Responsibilities
 
@@ -167,4 +220,4 @@ Use Hugging Face for provenance and portability.
 - Demonstrations are schema-consistent and versioned.
 - Training is reproducible from config and dataset reference.
 - Best checkpoint achieves stable task success in Isaac Sim evaluation.
-- Final project structure separates upstream dependencies from owned integration code.
+- Final project structure separates upstream dependencies from `openarm_act_project/`.
