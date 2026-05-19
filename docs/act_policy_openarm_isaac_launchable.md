@@ -140,11 +140,11 @@ Rules:
 Use Hugging Face for provenance and portability.
 
 ### Dataset
-- Publish cleaned demonstration snapshots to a HF dataset repo.
+- Publish cleaned demonstration snapshots to a Hugging Face dataset repo.
 - Include schema documentation and collection metadata.
 
 ### Model
-- Publish selected ACT checkpoints to a HF model repo.
+- Publish selected ACT checkpoints to a Hugging Face model repo.
 - Add a model card with:
   - task and simulator version
   - dataset reference/version
