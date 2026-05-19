@@ -132,7 +132,8 @@ def _get_qpos_from_env(env, num_joints: int):
         robot = env.scene["robot"]
         joint_ids, _ = robot.find_joints([f"openarm_joint{i}" for i in range(1, num_joints + 1)])
         return robot.data.joint_pos[0, joint_ids].detach().cpu().numpy().astype("float32")
-    except Exception:
+    except Exception as exc:
+        omni.log.warn(f"Failed to read joint positions from env; using zeros fallback: {exc}")
         return np.zeros(num_joints, dtype="float32")
 
 
@@ -177,7 +178,7 @@ def _ensure_vector_dim(name: str, vec: np.ndarray, expected: int) -> None:
         raise RuntimeError(f"{name} has shape {vec.shape}; expected [{expected}].")
 
 
-def _apply_engineered_action_noise(action: np.ndarray, noise_cfg: dict, step_idx: int, rng: np.random.Generator) -> np.ndarray:
+def _add_action_noise(action: np.ndarray, noise_cfg: dict, step_idx: int, rng: np.random.Generator) -> np.ndarray:
     if not noise_cfg.get("enabled", False):
         return action.astype(np.float32)
     gaussian_std = float(noise_cfg.get("gaussian_std", 0.0))
@@ -250,9 +251,9 @@ def main() -> None:
     image_height: int = obs_cfg.get("image_height", 480)
     image_width: int = obs_cfg.get("image_width", 640)
     task_name: str = cfg.get("task_name", task)
-    expert_source: str = coll_cfg.get("expert_source", "rsl_rl")
-    if expert_source not in {"rsl_rl", "keyboard", "dagger"}:
-        raise ValueError(f"Unsupported collection.expert_source: {expert_source}")
+    collection_mode: str = coll_cfg.get("mode", coll_cfg.get("expert_source", "rsl_rl"))
+    if collection_mode not in {"rsl_rl", "keyboard", "dagger"}:
+        raise ValueError(f"Unsupported collection.mode: {collection_mode}")
     dagger_cfg: dict = coll_cfg.get("dagger", {})
     noise_cfg: dict = coll_cfg.get("noise", {})
     noise_rng = np.random.default_rng(int(noise_cfg.get("seed", 42)))
@@ -276,9 +277,9 @@ def main() -> None:
             f"Configuration mismatch: observation.num_joints={obs_cfg.get('num_joints', 7)} "
             f"but env action dim is {env_action_dim} for task {task}."
         )
-    expert_policy = _load_expert_policy(coll_cfg, args_cli.device) if expert_source in {"rsl_rl", "dagger"} else None
+    expert_policy = _load_expert_policy(coll_cfg, args_cli.device) if collection_mode in {"rsl_rl", "dagger"} else None
     student_policy = None
-    if expert_source == "dagger":
+    if collection_mode == "dagger":
         student_checkpoint = _resolve_project_path(dagger_cfg.get("student_checkpoint_dir"))
         if not student_checkpoint:
             raise RuntimeError("collection.dagger.student_checkpoint_dir is required for expert_source=dagger.")
@@ -293,7 +294,7 @@ def main() -> None:
     # -----------------------------------------------------------------------
     # Teleoperation device
     # -----------------------------------------------------------------------
-    teleop = Se3Keyboard(Se3KeyboardCfg(pos_sensitivity=0.2, rot_sensitivity=0.5)) if expert_source == "keyboard" else None
+    teleop = Se3Keyboard(Se3KeyboardCfg(pos_sensitivity=0.2, rot_sensitivity=0.5)) if collection_mode == "keyboard" else None
 
     quit_requested = False
 
@@ -312,7 +313,7 @@ def main() -> None:
     collected = 0
     step_period = 1.0 / step_hz
 
-    print(f"\nCollecting {num_episodes} demonstrations for task '{task}' with expert_source={expert_source}.")
+    print(f"\nCollecting {num_episodes} demonstrations for task '{task}' with collection_mode={collection_mode}.")
     if teleop is not None:
         print("Controls: WASD/arrows — EE translation | Q — quit\n")
 
@@ -355,13 +356,13 @@ def main() -> None:
                     )
                     student_action_np = student_policy.get_action(student_obs["qpos"], student_obs["images"])
                     _ensure_vector_dim("student_action", student_action_np, obs_cfg.get("num_joints", 7))
-                    use_expert_exec = bool(noise_rng.random() < dagger_beta)
-                    exec_action_np = expert_action_np if use_expert_exec else student_action_np
+                    use_expert_for_execution = bool(noise_rng.random() < dagger_beta)
+                    exec_action_np = expert_action_np if use_expert_for_execution else student_action_np
                     action_np = expert_action_np
                 else:
                     exec_action_np = expert_action_np
                     action_np = expert_action_np
-                exec_action_np = _apply_engineered_action_noise(exec_action_np, noise_cfg, step_count, noise_rng)
+                exec_action_np = _add_action_noise(exec_action_np, noise_cfg, step_count, noise_rng)
                 _ensure_vector_dim("exec_action", exec_action_np, obs_cfg.get("num_joints", 7))
                 action_t = torch.from_numpy(exec_action_np).float().unsqueeze(0).to(args_cli.device)
             else:
@@ -375,7 +376,7 @@ def main() -> None:
                 num_joints = obs_cfg.get("num_joints", 7)
                 action_np = delta_pose[:num_joints].astype("float32")
                 _ensure_vector_dim("teleop_action", action_np, num_joints)
-                exec_action_np = _apply_engineered_action_noise(action_np, noise_cfg, step_count, noise_rng)
+                exec_action_np = _add_action_noise(action_np, noise_cfg, step_count, noise_rng)
                 _ensure_vector_dim("exec_action", exec_action_np, num_joints)
                 action_t = torch.from_numpy(exec_action_np).float().unsqueeze(0).to(args_cli.device)
 

@@ -70,7 +70,7 @@ then set `collection.expert_checkpoint` in the task config to the exported
   --config configs/act_openarm_reach.yaml
 ```
 
-With `collection.expert_source: dagger`, data collection uses DAgger-style roll-ins
+With `collection.mode: dagger`, data collection uses DAgger-style roll-ins
 from the ACT student policy while retaining RSL-RL expert labels, and applies
 engineered action noise via `collection.noise.*` for robust trajectories.
 
