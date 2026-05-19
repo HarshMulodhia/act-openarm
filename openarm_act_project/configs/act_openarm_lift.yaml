@@ -1,31 +1,31 @@
-# Configuration for ACT policy training on the OpenArm unimanual reach task.
+# Configuration for ACT policy training on the OpenArm unimanual lift task.
 # All paths are relative to the openarm_act_project/ directory unless absolute.
 
-task: OpenArmUnimanualReach-v0
-task_name: openarm_reach
+task: OpenArmUnimanualLift-v0
+task_name: openarm_lift
 
 # ---------------------------------------------------------------------------
 # Demonstration collection
 # ---------------------------------------------------------------------------
 collection:
-  num_episodes: 200
-  dataset_dir: data/demos_hdf5/openarm_reach
+  num_episodes: 300
+  dataset_dir: data/demos_hdf5/openarm_lift
   step_hz: 30
-  teleop_device: keyboard   # keyboard | spacemouse | gamepad
-  num_success_steps: 10     # consecutive success steps to mark an episode done
+  teleop_device: keyboard
+  num_success_steps: 10
 
 # ---------------------------------------------------------------------------
 # ACT model architecture
 # ---------------------------------------------------------------------------
 model:
   policy_class: ACT
-  chunk_size: 100           # action chunk length (k)
-  kl_weight: 10             # beta in KL divergence term
+  chunk_size: 100
+  kl_weight: 10
   hidden_dim: 512
   dim_feedforward: 3200
   nheads: 8
   num_encoder_layers: 4
-  num_queries: 100          # must equal chunk_size
+  num_queries: 100
   backbone: resnet18
   no_encoder: false
 
@@ -37,21 +37,21 @@ observation:
     - cam_main
   image_height: 480
   image_width: 640
-  num_joints: 6             # degrees of freedom of the unimanual arm
+  num_joints: 6
 
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
 training:
   seed: 42
-  num_epochs: 2000
+  num_epochs: 3000
   batch_size: 8
   lr: 1.0e-5
   weight_decay: 1.0e-4
   lr_backbone: 1.0e-5
-  checkpoint_dir: checkpoints/openarm_reach_act
-  save_every: 100           # save checkpoint every N epochs
-  eval_every: 500           # run evaluation every N epochs
+  checkpoint_dir: checkpoints/openarm_lift_act
+  save_every: 100
+  eval_every: 500
   num_workers: 4
 
 # ---------------------------------------------------------------------------
@@ -59,6 +59,6 @@ training:
 # ---------------------------------------------------------------------------
 evaluation:
   num_rollouts: 50
-  max_timesteps: 400
-  temporal_agg: false       # set true to use temporal action aggregation
-  onscreen_render: false    # set true to enable viewer during eval
+  max_timesteps: 600
+  temporal_agg: false
+  onscreen_render: false
