@@ -7,6 +7,7 @@ This repository contains structured documentation for building and integrating a
 - `/docs/0.md` — Architecture and project structure
 - `/docs/1.md` — Setup and execution workflow
 - `/docs/2.md` — Refactor standards and implementation checklist
+- `/docs/act_policy_openarm_isaac_launchable.md` — Detailed ACT training/deployment guide and final code structure
 
 ## Scope
 
