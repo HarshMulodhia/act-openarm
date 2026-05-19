@@ -111,7 +111,7 @@ def main() -> None:
     camera_names: list[str] = obs_cfg.get("training_camera_names", obs_cfg.get("camera_names", ["cam_main"]))
     camera_setup: dict = obs_cfg.get("camera_setup", {})
     render_camera_names: list[str] = obs_cfg.get("render_camera_names", [])
-    num_joints: int = obs_cfg.get("num_joints", 6)
+    num_joints: int = obs_cfg.get("num_joints", 7)
     step_period = 1.0 / args_cli.step_hz
 
     checkpoint_dir = CHECKPOINT_DIR
