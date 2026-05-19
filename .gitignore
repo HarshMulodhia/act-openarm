@@ -1,0 +1,96 @@
+# ==========================================
+# 1. NVIDIA Isaac Sim / Omniverse / Isaac Lab
+# ==========================================
+# Large simulation assets & 3D data formats
+*.usd
+*.usda
+*.usdc
+*.usdz
+*.fbx
+*.obj
+*.stl
+
+# Omniverse cache, diagnostics, and app layout states
+**/.thumbs
+**/*.dmp
+**/kit/
+**/user_config/
+**/cache/
+isaacsim.log
+AppData/
+
+# ==========================================
+# 2. ACT (Action Chunking with Transformers) & ML
+# ==========================================
+# Robot Demonstration Datasets (Typically stored in .hdf5 or .pkl)
+# Pro Tip: Use Git LFS if you absolutely need to track small metadata scripts.
+*.hdf5
+*.h5
+*.pkl
+*.pickle
+/datasets/
+/data/
+
+# Machine Learning Training Logs & Checkpoints
+/ckpt/
+/checkpoints/
+/models/
+*.pt
+*.pth
+*.onnx
+*.pb
+
+# Visualization and Experiment Tracking
+/wandb/
+/tensorboard/
+/runs/
+/outputs/
+/logs/
+*.png
+*.jpg
+*.mp4
+
+# ==========================================
+# 3. OpenArm / Hardware & Ext Build Targets
+# ==========================================
+# C/C++ compilation artifacts from custom hardware plugins or extensions
+**/build/
+**/install/
+**/devel/
+**/*.so
+**/*.dylib
+**/*.dll
+**/*.a
+**/*.o
+**/*.obj
+
+# ==========================================
+# 4. Standard Python Environment
+# ==========================================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+*.egg-info/
+.eggs/
+
+# ==========================================
+# 5. IDEs and Local Workspace Configs
+# ==========================================
+.idea/
+.project
+.pydevproject
+.DS_Store
+
+# Keep global VS Code settings, but ignore workspace tasks/history
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
